@@ -11,6 +11,8 @@ The scripts assume they are executed **locally on a Windows Certificate Authorit
 
 ---
 
+![HTMLreport](ExampleReport.png)
+
 ## What this project provides
 
 ### Metric scripts for Aria Operations
