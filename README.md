@@ -495,4 +495,4 @@ If you only want the minimum steps:
 
 ## License
 
-Add your preferred license here before publishing to GitHub.
+Released under the MIT License. See [`LICENSE`](LICENSE).
