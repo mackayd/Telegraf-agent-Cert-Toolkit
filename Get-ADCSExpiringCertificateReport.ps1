@@ -30,7 +30,7 @@ try {
 
     $certs = @(Get-ADCSExpiringCertificates -WindowDays $WindowDays)
 
-    $enriched = foreach ($cert in $certs) {
+    $enriched = @(foreach ($cert in $certs) {
         $severity = if ($cert.DaysToExpiry -le 14) { 'critical' } elseif ($cert.DaysToExpiry -le 30) { 'warning' } else { 'notice' }
         [pscustomobject]@{
             RequestID           = [string]$cert.RequestID
@@ -43,7 +43,7 @@ try {
             DaysToExpiry        = [int]$cert.DaysToExpiry
             Severity            = $severity
         }
-    }
+    })
 
     $criticalCount = @($enriched | Where-Object { $_.Severity -eq 'critical' }).Count
     $warningCount  = @($enriched | Where-Object { $_.Severity -eq 'warning' }).Count
@@ -51,8 +51,14 @@ try {
     $totalCount    = $enriched.Count
     $soonestDays   = if ($totalCount -gt 0) { ($enriched | Select-Object -First 1).DaysToExpiry } else { -1 }
 
-    $csvRows = $enriched | Select-Object CommonName, RequesterName, RequestID, SerialNumber, CertificateTemplate, DaysToExpiry, Severity, NotAfterDisplay
-    $csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+    $csvColumns = @('CommonName', 'RequesterName', 'RequestID', 'SerialNumber', 'CertificateTemplate', 'DaysToExpiry', 'Severity', 'NotAfterDisplay')
+    $csvRows = @($enriched | Select-Object -Property $csvColumns)
+    if ($csvRows.Count -eq 0) {
+        '"CommonName","RequesterName","RequestID","SerialNumber","CertificateTemplate","DaysToExpiry","Severity","NotAfterDisplay"' | Set-Content -Path $csvPath -Encoding UTF8
+    }
+    else {
+        $csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+    }
 
     $summaryText = @(
         "ADCS Expiring Certificate Report"
@@ -469,8 +475,8 @@ body {
 
   <section class="cards">
     <div class="card"><div class="card-label">Total Expiring</div><div class="card-value">__TOTAL__</div></div>
-    <div class="card"><div class="card-label">Critical (≤14 days)</div><div class="card-value">__CRITICAL__</div></div>
-    <div class="card"><div class="card-label">Warning (≤30 days)</div><div class="card-value">__WARNING__</div></div>
+    <div class="card"><div class="card-label">Critical (&lt;=14 days)</div><div class="card-value">__CRITICAL__</div></div>
+    <div class="card"><div class="card-label">Warning (&lt;=30 days)</div><div class="card-value">__WARNING__</div></div>
     <div class="card"><div class="card-label">Notice (31-__WINDOW__ days)</div><div class="card-value">__NOTICE__</div></div>
     <div class="card"><div class="card-label">Soonest Days To Expiry</div><div class="card-value">__SOONEST_RAW__</div></div>
   </section>

@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $script:ADCSMetricLogPath = Join-Path -Path $PSScriptRoot -ChildPath 'ADCSMetricErrors.log'
+$script:ADCSIgnoredCertificateTemplatePath = Join-Path -Path $PSScriptRoot -ChildPath 'ADCSIgnoredCertificateTemplates.txt'
 
 function Write-ADCSMetricLog {
     param(
@@ -63,6 +64,70 @@ function Parse-CertutilDate {
     }
 
     return [datetime]::Parse($Value)
+}
+
+function Get-ADCSIgnoredCertificateTemplateLookup {
+    $lookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    if (-not (Test-Path -LiteralPath $script:ADCSIgnoredCertificateTemplatePath -PathType Leaf)) {
+        return ,$lookup
+    }
+
+    foreach ($line in (Get-Content -LiteralPath $script:ADCSIgnoredCertificateTemplatePath -ErrorAction Stop)) {
+        $entry = $line.Trim()
+        if (-not $entry) { continue }
+        if ($entry.StartsWith('#')) { continue }
+
+        [void]$lookup.Add($entry)
+    }
+
+    return ,$lookup
+}
+
+function Get-ADCSCertificateTemplateMatchValues {
+    param(
+        [AllowNull()]
+        [string]$CertificateTemplate
+    )
+
+    $values = [System.Collections.Generic.List[string]]::new()
+
+    if ([string]::IsNullOrWhiteSpace($CertificateTemplate)) {
+        return @()
+    }
+
+    $template = $CertificateTemplate.Trim()
+    $values.Add($template)
+
+    if ($template -match '^([0-9]+(?:\.[0-9]+)+)\s+(.+)$') {
+        $values.Add($Matches[1])
+        $values.Add($Matches[2].Trim())
+    }
+
+    return @($values)
+}
+
+function Test-ADCSCertificateTemplateIgnored {
+    param(
+        [AllowNull()]
+        [string]$CertificateTemplate,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]]$IgnoredTemplates
+    )
+
+    if ($IgnoredTemplates.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($value in (Get-ADCSCertificateTemplateMatchValues -CertificateTemplate $CertificateTemplate)) {
+        if ($IgnoredTemplates.Contains($value)) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Invoke-CertutilCsvLocal {
@@ -151,6 +216,7 @@ function Get-ADCSExpiringCertificates {
     $now = Get-Date
     $cutoff = $now.AddDays($WindowDays)
     $revokedLookup = Get-ADCSRevokedLookup
+    $ignoredTemplateLookup = Get-ADCSIgnoredCertificateTemplateLookup
     $issuedRows = Get-ADCSIssuedCertificateRows
 
     $results = foreach ($row in $issuedRows) {
@@ -158,6 +224,7 @@ function Get-ADCSExpiringCertificates {
 
         if ($row.RequestID -and $revokedLookup.Contains("RID:$($row.RequestID)")) { continue }
         if ($row.SerialNumber -and $revokedLookup.Contains("SER:$($row.SerialNumber)")) { continue }
+        if (Test-ADCSCertificateTemplateIgnored -CertificateTemplate $row.CertificateTemplate -IgnoredTemplates $ignoredTemplateLookup) { continue }
 
         try {
             $notAfter = Parse-CertutilDate -Value $row.NotAfter
@@ -203,7 +270,7 @@ function Get-ADCSMetricValue {
 
             }
             'Warning30' {
-                return @((Get-ADCSExpiringCertificates -WindowDays 60) | Where-Object { $_.DaysToExpiry -le 30 }).Count
+                return @((Get-ADCSExpiringCertificates -WindowDays 60) | Where-Object { $_.DaysToExpiry -gt 14 -and $_.DaysToExpiry -le 30 }).Count
             }
             'Critical14' {
                 return @((Get-ADCSExpiringCertificates -WindowDays 60) | Where-Object { $_.DaysToExpiry -le 14 }).Count

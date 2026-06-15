@@ -38,6 +38,7 @@ This file contains the common logic used by all metric scripts and the report sc
 - CSV parsing
 - certificate expiry date parsing
 - revoked certificate lookup handling
+- certificate template ignore-list handling
 - filtering of issued, non-revoked certificates inside a defined expiry window
 - error logging
 
@@ -59,6 +60,7 @@ By default, reports are written to a **`Reports`** sub-folder beneath the script
 
 ```text
 ADCSMetricLib.ps1
+ADCSIgnoredCertificateTemplates.txt
 Get-ADCSCollectionStatus.ps1
 Get-ADCSCriticalCertificateCount14Days.ps1
 Get-ADCSExpiringCertificateCount60Days.ps1
@@ -81,8 +83,9 @@ Each script:
 1. loads `ADCSMetricLib.ps1`
 2. queries the local CA database via `certutil`
 3. filters out revoked certificates
-4. evaluates the relevant expiry window
-5. returns a single integer to stdout
+4. filters out certificates generated from ignored certificate templates
+5. evaluates the relevant expiry window
+6. returns a single integer to stdout
 
 ### Reporting path
 
@@ -92,7 +95,7 @@ When an alert is triggered, an operator can log onto the CA server and run the r
 2. builds an enriched in-memory list of expiring certificates
 3. classifies each certificate as:
    - `critical` (`<= 14 days`)
-   - `warning` (`<= 30 days`)
+   - `warning` (`15-30 days`)
    - `notice` (`31-60 days`)
 4. generates:
    - a styled HTML dashboard
@@ -130,7 +133,7 @@ If a server hosts multiple CA instances and local `certutil` selection becomes a
 
 ### 1. Copy files to the CA server
 
-Copy all `.ps1` files into the same folder, for example:
+Copy all `.ps1` files and `ADCSIgnoredCertificateTemplates.txt` into the same folder, for example:
 
 ```text
 C:\Scripts
@@ -139,13 +142,34 @@ C:\Scripts
 Important:
 
 - `ADCSMetricLib.ps1` must remain in the **same folder** as all metric scripts and the report script
+- `ADCSIgnoredCertificateTemplates.txt` must remain in the **same folder** if template-based exclusions are required
 - the report script defaults to writing output to:
 
 ```text
 C:\Scripts\Reports
 ```
 
-### 2. Verify local execution first
+### 2. Configure ignored certificate templates
+
+Edit `ADCSIgnoredCertificateTemplates.txt` to exclude certificates generated from certificate templates that should not contribute to expiry metrics or reports.
+
+Use one template per line:
+
+```text
+# Blank lines and lines starting with # are ignored
+short vSphere 8.x
+1.3.6.1.4.1.311.21.8.11236240.14281748.11288970.14093760.16414549.170.12396323.14903990
+```
+
+Entries are matched case-insensitively against:
+
+- the full `CertificateTemplate` value returned by `certutil`
+- the template OID, when `certutil` returns `OID display name`
+- the template display name, when `certutil` returns `OID display name`
+
+Leave the file with only comments, or remove all entries, to disable template exclusions.
+
+### 3. Verify local execution first
 
 Run the metric scripts locally before configuring Aria Operations.
 
@@ -157,7 +181,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\Get-ADCSCrit
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\Get-ADCSSoonestDaysToExpiry60Days.ps1"
 ```
 
-### 3. Configure Aria Operations Custom Script objects
+### 4. Configure Aria Operations Custom Script objects
 
 Create one Aria Custom Script object per metric script.
 
@@ -202,8 +226,10 @@ Use this as the basic health/collection metric.
 
 Returns:
 
-- `0` or higher = number of issued, non-revoked certificates expiring in **60 days or less**
+- `0` or higher = number of issued, non-revoked, non-ignored-template certificates expiring in **60 days or less**
 - `-1` = failure
+
+This is a total in-scope expiry count and can include certificates also counted by the warning or critical severity metrics.
 
 ---
 
@@ -211,8 +237,10 @@ Returns:
 
 Returns:
 
-- `0` or higher = number of issued, non-revoked certificates expiring in **30 days or less**
+- `0` or higher = number of issued, non-revoked, non-ignored-template certificates expiring in **15 to 30 days**
 - `-1` = failure
+
+This is a severity bucket. Certificates expiring in 14 days or less are counted only by the critical metric, not by this warning metric.
 
 ---
 
@@ -220,7 +248,7 @@ Returns:
 
 Returns:
 
-- `0` or higher = number of issued, non-revoked certificates expiring in **14 days or less**
+- `0` or higher = number of issued, non-revoked, non-ignored-template certificates expiring in **14 days or less**
 - `-1` = failure
 
 ---
@@ -229,7 +257,7 @@ Returns:
 
 Returns:
 
-- `0` or higher = smallest `DaysToExpiry` value found in the **60-day** window
+- `0` or higher = smallest `DaysToExpiry` value found in the **60-day** window after template exclusions
 - `-1` = no certificates found inside the 60-day window
 - `-2` = failure
 
@@ -282,7 +310,7 @@ param(
 
 ### Default behaviour
 
-- scans the local CA for issued, non-revoked certificates within the selected window
+- scans the local CA for issued, non-revoked certificates within the selected window, excluding ignored certificate templates
 - classifies them as `critical`, `warning`, or `notice`
 - writes output to the `Reports` sub-folder by default
 - writes the generated HTML path to stdout
@@ -396,6 +424,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Scripts\ADCSMe
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Scripts\ADCSMetricLib.ps1'; @(Get-ADCSExpiringCertificates -WindowDays 60).Count"
 ```
 
+### Test template ignore matching directly
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Scripts\ADCSMetricLib.ps1'; Test-ADCSCertificateTemplateIgnored -CertificateTemplate '1.2.3.4 ExampleTemplate' -IgnoredTemplates (Get-ADCSIgnoredCertificateTemplateLookup)"
+```
+
 ---
 
 ## Operational workflow
@@ -449,7 +483,6 @@ Potential future improvements for this project:
 
 - scheduled automatic report generation
 - emailing the latest report when warning/critical counts are non-zero
-- optional filtering by certificate template
 - optional filtering by requester
 - friendlier template display names
 - optional JSON output for non-Aria use cases
@@ -461,7 +494,7 @@ Potential future improvements for this project:
 
 If you only want the minimum steps:
 
-1. Copy all scripts to `C:\Scripts`
+1. Copy all scripts and `ADCSIgnoredCertificateTemplates.txt` to `C:\Scripts`
 2. Test the metric scripts locally
 3. Create five Aria Custom Script objects using `powershell.exe -File`
 4. Leave `Args` blank
